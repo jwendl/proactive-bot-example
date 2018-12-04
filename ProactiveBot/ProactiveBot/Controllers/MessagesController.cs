@@ -1,6 +1,10 @@
-﻿using Microsoft.Bot.Builder.Dialogs;
+﻿using Microsoft.Azure;
+using Microsoft.Bot.Builder.Dialogs;
 using Microsoft.Bot.Connector;
 using Microsoft.Bot.Connector.Teams.Models;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Table;
+using ProactiveBot.Models;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -24,7 +28,7 @@ namespace ProactiveBot
             }
             else
             {
-                HandleSystemMessage(activity);
+                await HandleSystemMessageAsync(activity);
             }
             var response = Request.CreateResponse(HttpStatusCode.OK);
             return response;
@@ -35,7 +39,7 @@ namespace ProactiveBot
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
 
-        private Activity HandleSystemMessage(Activity message)
+        private async Task<Activity> HandleSystemMessageAsync(Activity message)
         {
             if (message.Type == ActivityTypes.DeleteUserData)
             {
@@ -51,9 +55,48 @@ namespace ProactiveBot
                 if (teamsChannelData != null)
                 {
                     var eventtype = teamsChannelData.EventType;
-                    if (eventtype == "teamMembersAdded")
+                    if (eventtype == "teamMemberAdded")
                     {
+                        foreach (var memberAdded in message.MembersAdded)
+                        {
+                            var teamsUserInfo = new TeamsUserInfo();
 
+                            // Why does the bot do this???
+                            if (memberAdded.Name == null)
+                            {
+                                // Assume it's the bot?
+                                teamsUserInfo = new TeamsUserInfo()
+                                {
+                                    RowKey = "jwproactivebot",
+                                    PartitionKey = "jwproactivebot",
+                                    Id = memberAdded.Id,
+                                    Name = "jwproactivebot",
+                                    Type = "bot",
+                                };
+                            }
+                            else
+                            {
+                                // Assume it's a user added to the channel?
+                                teamsUserInfo = new TeamsUserInfo()
+                                {
+                                    RowKey = memberAdded.Name,
+                                    PartitionKey = memberAdded.Name,
+                                    Id = memberAdded.Id,
+                                    Name = memberAdded.Name,
+                                    Type = "user",
+                                };
+                            }
+
+                            await SaveToStorageAsync("TeamsUsers", teamsUserInfo);
+
+                            var tenantInformation = new TenantInformation()
+                            {
+                                RowKey = "BotTenant",
+                                PartitionKey = "BotTenant",
+                                TenantId = teamsChannelData.Tenant.Id,
+                            };
+                            await SaveToStorageAsync("TenantInfo", tenantInformation);
+                        }
                     }
                 }
             }
@@ -71,6 +114,18 @@ namespace ProactiveBot
             }
 
             return null;
+        }
+
+        private async Task SaveToStorageAsync<T>(string tableReference, T item)
+            where T : TableEntity
+        {
+            var cloudStorageAccount = CloudStorageAccount.Parse(CloudConfigurationManager.GetSetting("StorageAccount"));
+            var cloudTableClient = cloudStorageAccount.CreateCloudTableClient();
+            var cloudTable = cloudTableClient.GetTableReference(tableReference);
+            await cloudTable.CreateIfNotExistsAsync();
+
+            var insertOrReplaceOperation = TableOperation.InsertOrReplace(item);
+            await cloudTable.ExecuteAsync(insertOrReplaceOperation);
         }
     }
 }
